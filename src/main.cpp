@@ -1454,7 +1454,97 @@ static unsigned int GetNextWorkRequiredV2(const CBlockIndex* pindexLast, bool fP
     };
 
     return bnNew.GetCompact();
-    //END OLD DIGI
+    //END NEW DIGI
+}
+
+//NEW KGW
+
+unsigned int static KimotoGravityWell(const CBlockIndex* pindexLast, const CBlock *pblock, uint64 TargetBlocksSpacingSeconds, uint64 PastBlocksMin, uint64 PastBlocksMax) {
+
+/* current difficulty formula - kimoto gravity well */
+const CBlockIndex *BlockLastSolved = pindexLast;
+const CBlockIndex *BlockReading = pindexLast;
+const CBlock *BlockCreating = pblock;
+
+BlockCreating = BlockCreating;
+uint64 PastBlocksMass = 0;
+int64 PastRateActualSeconds = 0;
+int64 PastRateTargetSeconds = 0;
+double PastRateAdjustmentRatio = double(1);
+CBigNum PastDifficultyAverage;
+CBigNum PastDifficultyAveragePrev;
+double EventHorizonDeviation;
+double EventHorizonDeviationFast;
+double EventHorizonDeviationSlow;
+
+    if (BlockLastSolved == NULL || BlockLastSolved->nHeight == 0 || (uint64)BlockLastSolved->nHeight < PastBlocksMin) { return bnProofOfWorkLimit.GetCompact(); }
+        int64 LatestBlockTime = BlockLastSolved->GetBlockTime();
+
+        for (unsigned int i = 1; BlockReading && BlockReading->nHeight > 0; i++) {
+
+            if (PastBlocksMax > 0 && i > PastBlocksMax) { break; }
+            PastBlocksMass++;
+
+            if (i == 1) { PastDifficultyAverage.SetCompact(BlockReading->nBits); }
+
+            else { PastDifficultyAverage = ((CBigNum().SetCompact(BlockReading->nBits) - PastDifficultyAveragePrev) / i) + PastDifficultyAveragePrev; }
+            PastDifficultyAveragePrev = PastDifficultyAverage;
+
+            if (LatestBlockTime < BlockReading->GetBlockTime()) {
+
+                if (BlockReading->nHeight > 67500) LatestBlockTime = BlockReading->GetBlockTime();
+            }
+
+            PastRateActualSeconds = LatestBlockTime - BlockReading->GetBlockTime();
+            PastRateTargetSeconds = TargetBlocksSpacingSeconds * PastBlocksMass;
+            PastRateAdjustmentRatio = double(1);
+
+            if (BlockReading->nHeight > 67500) {
+
+                if (PastRateActualSeconds < 1) { PastRateActualSeconds = 1; }
+
+            } else {
+
+                if (PastRateActualSeconds < 0) { PastRateActualSeconds = 0; }
+            }
+
+            if (PastRateActualSeconds != 0 && PastRateTargetSeconds != 0) {
+                PastRateAdjustmentRatio = double(PastRateTargetSeconds) / double(PastRateActualSeconds);
+            }
+
+            EventHorizonDeviation = 1 + (0.7084 * pow((double(PastBlocksMass)/double(144)), -1.228));
+            EventHorizonDeviationFast = EventHorizonDeviation;
+            EventHorizonDeviationSlow = 1 / EventHorizonDeviation;
+
+            if (PastBlocksMass >= PastBlocksMin) {
+                if ((PastRateAdjustmentRatio <= EventHorizonDeviationSlow) || (PastRateAdjustmentRatio >= EventHorizonDeviationFast)) { assert(BlockReading); break; }
+            }
+
+            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            BlockReading = BlockReading->pprev;
+        }
+
+        CBigNum bnNew(PastDifficultyAverage);
+        if (PastRateActualSeconds != 0 && PastRateTargetSeconds != 0) {
+            bnNew *= PastRateActualSeconds;
+            bnNew /= PastRateTargetSeconds;
+        }
+
+        if (bnNew > bnProofOfWorkLimit) { bnNew = bnProofOfWorkLimit; }
+        return bnNew.GetCompact();
+}
+
+// Using KGW
+unsigned int static GetNextWorkRequiredV3(const CBlockIndex* pindexLast, const CBlock *pblock)
+{
+static const int64 BlocksTargetSpacing = 60; // 1 minute
+unsigned int TimeDaySeconds = 60 * 60 * 24;
+int64 PastSecondsMin = TimeDaySeconds * 0.25;
+int64 PastSecondsMax = TimeDaySeconds * 7;
+uint64 PastBlocksMin = PastSecondsMin / BlocksTargetSpacing;
+uint64 PastBlocksMax = PastSecondsMax / BlocksTargetSpacing;
+
+return KimotoGravityWell(pindexLast, pblock, BlocksTargetSpacing, PastBlocksMin, PastBlocksMax);
 }
 
 // POW blocks tried various algorithms starting at different block height
@@ -1462,11 +1552,15 @@ unsigned int GetNextProofOfWork(const CBlockIndex* pindexLast, const CBlock* pbl
 {
     const CBlockIndex* pindexLastPOW = GetLastBlockIndex(pindexLast, false);
 
-    // most recent (highest block height DIGISHIELD FIX)
+    // Reimplementing kimoto gravity well - Current difficulty retarget
+    if (pindexLastPOW->nHeight+1 >= (fTestNet ? BLOCK_HEIGHT_KGW_NEW_START_TESTNET : BLOCK_HEIGHT_KGW_NEW_START))
+        return GetNextWorkRequiredV3(pindexLastPOW, false);
+
+    // Second attempt digishield
     if (pindexLastPOW->nHeight+1 >= (fTestNet ? BLOCK_HEIGHT_DIGISHIELD_FIX_START_TESTNET : BLOCK_HEIGHT_DIGISHIELD_FIX_START))
         return GetNextWorkRequiredV2(pindexLastPOW, false);
 
-    // most recent (highest block height)
+    // First digishield
     if (pindexLastPOW->nHeight+1 >= (fTestNet ? BLOCK_HEIGHT_POS_AND_DIGISHIELD_START_TESTNET : BLOCK_HEIGHT_POS_AND_DIGISHIELD_START))
         return GetNextTrust_DigiShield(pindexLastPOW, false);
 
